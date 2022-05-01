@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 import React, { useState } from 'react';
-import { useHistory } from 'react-router-dom';
+import { useHistory, useLocation } from 'react-router-dom';
 import {
   PrimaryButton,
   Flex,
@@ -23,6 +23,7 @@ const MeetingJoinDetails = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const { meetingId, localUserName } = useAppState();
+  const params = new URLSearchParams(useLocation().search);
 
   const handleJoinMeeting = async () => {
     setIsLoading(true);
@@ -30,7 +31,11 @@ const MeetingJoinDetails = () => {
     try {
       await meetingManager.start();
       setIsLoading(false);
-      history.push(`${routes.MEETING}/${meetingId}`);
+      if (params.has('preparedApiEndpoint') && params.has('preparedMeetingId') && params.has('preparedAttendeeId')) {
+        history.push(`${routes.MEETING}/${meetingId}?${params.toString()}`);
+      } else {
+        history.push(`${routes.MEETING}/${meetingId}`);
+      }
     } catch (error) {
       setIsLoading(false);
       setError(error.message);

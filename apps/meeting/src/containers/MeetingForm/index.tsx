@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 import React, { ChangeEvent, useContext, useState } from 'react';
-import { useHistory } from 'react-router-dom';
+import { useHistory, useLocation } from 'react-router-dom';
 import {
   Checkbox,
   DeviceLabels,
@@ -26,6 +26,7 @@ import Spinner from '../../components/icons/Spinner';
 import DevicePermissionPrompt from '../DevicePermissionPrompt';
 import RegionSelection from './RegionSelection';
 import { createGetAttendeeCallback, fetchMeeting } from '../../utils/api';
+import { createGetPreparedAttendeeCallback, getPreparedMeeting } from '../../utils/preparedApi';
 import { useAppState } from '../../providers/AppStateProvider';
 import { MeetingMode, VideoFiltersCpuUtilization } from '../../types';
 import { MeetingManagerJoinOptions } from 'amazon-chime-sdk-component-library-react/lib/providers/MeetingProvider/types';
@@ -69,6 +70,10 @@ const MeetingForm: React.FC = () => {
   const { errorMessage, updateErrorMessage } = useContext(getErrorContext());
   const history = useHistory();
   const browserBehavior = new DefaultBrowserBehavior();
+  const params = new URLSearchParams(useLocation().search);
+  const preparedApiEndpoint = params.get('preparedApiEndpoint');
+  const preparedMeetingId = params.get('preparedMeetingId');
+  const preparedAttendeeId = params.get('preparedAttendeeId');
 
   const handleJoinMeeting = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -132,6 +137,59 @@ const MeetingForm: React.FC = () => {
     }
   };
 
+  const joinPreparedMeeting = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!preparedApiEndpoint || !preparedMeetingId || !preparedAttendeeId) {
+      return;
+    }
+
+    setIsLoading(true);
+    meetingManager.getAttendee = createGetPreparedAttendeeCallback(preparedApiEndpoint, preparedMeetingId);
+
+    try {
+      const { JoinInfo } = await getPreparedMeeting(preparedApiEndpoint, preparedMeetingId, preparedAttendeeId);
+      setJoinInfo(JoinInfo);
+      setMeetingId(JoinInfo.Title);
+      const meetingSessionConfiguration = new MeetingSessionConfiguration(JoinInfo?.Meeting, JoinInfo?.Attendee);
+      if (
+        meetingConfig.postLogger &&
+        meetingSessionConfiguration.meetingId &&
+        meetingSessionConfiguration.credentials &&
+        meetingSessionConfiguration.credentials.attendeeId
+      ) {
+        const existingMetadata = meetingConfig.postLogger.metadata;
+        meetingConfig.postLogger.metadata = {
+          ...existingMetadata,
+          meetingId: meetingSessionConfiguration.meetingId,
+          attendeeId: meetingSessionConfiguration.credentials.attendeeId,
+        };
+      }
+
+      setRegion(JoinInfo.Meeting.MediaRegion);
+      meetingSessionConfiguration.enableSimulcastForUnifiedPlanChromiumBasedBrowsers = enableSimulcast;
+      if (priorityBasedPolicy) {
+        meetingSessionConfiguration.videoDownlinkBandwidthPolicy = priorityBasedPolicy;
+      }
+      meetingSessionConfiguration.keepLastFrameWhenPaused = keepLastFrameWhenPaused;
+      const options: MeetingManagerJoinOptions = {
+        deviceLabels: meetingMode === MeetingMode.Spectator ? DeviceLabels.None : DeviceLabels.AudioAndVideo,
+        enableWebAudio: isWebAudioEnabled,
+      };
+
+      await meetingManager.join(meetingSessionConfiguration, options);
+      if (meetingMode === MeetingMode.Spectator) {
+        await meetingManager.start();
+        history.push(`${routes.MEETING}/${meetingId}?${params.toString()}`);
+      } else {
+        setMeetingMode(MeetingMode.Attendee);
+        history.push(`${routes.DEVICE}?${params.toString()}`);
+      }
+    } catch (error) {
+      updateErrorMessage((error as Error).message);
+    }
+  };
+
   const closeError = (): void => {
     updateErrorMessage('');
     setMeetingId('');
@@ -139,135 +197,179 @@ const MeetingForm: React.FC = () => {
     setIsLoading(false);
   };
 
-  return (
-    <form>
-      <Heading tag="h1" level={4} css="margin-bottom: 1rem">
+  if (!preparedApiEndpoint || !preparedMeetingId || !preparedAttendeeId) {
+    return (
+      <form>
+        <Heading tag="h1" level={4} css="margin-bottom: 1rem">
         Join a meeting
-      </Heading>
-      <FormField
-        field={Input}
-        label="Meeting Id"
-        value={meetingId}
-        infoText="Anyone with access to the meeting ID can join"
-        fieldProps={{
-          name: 'meetingId',
-          placeholder: 'Enter Meeting Id',
-        }}
-        errorText="Please enter a valid meeting ID"
-        error={meetingErr}
-        onChange={(e: ChangeEvent<HTMLInputElement>): void => {
-          setMeetingId(e.target.value);
-          if (meetingErr) {
-            setMeetingErr(false);
-          }
-        }}
-      />
-      <FormField
-        field={Input}
-        label="Name"
-        value={localUserName}
-        fieldProps={{
-          name: 'name',
-          placeholder: 'Enter Your Name',
-        }}
-        errorText="Please enter a valid name"
-        error={nameErr}
-        onChange={(e: ChangeEvent<HTMLInputElement>): void => {
-          setLocalUserName(e.target.value);
-          if (nameErr) {
-            setNameErr(false);
-          }
-        }}
-      />
-      <RegionSelection setRegion={setRegion} region={region} />
-      <FormField
-        field={Checkbox}
-        label="Join w/o Audio and Video"
-        value=""
-        checked={meetingMode === MeetingMode.Spectator}
-        onChange={(): void => {
-          if (meetingMode === MeetingMode.Spectator) {
-            setMeetingMode(MeetingMode.Attendee);
-          } else {
-            setMeetingMode(MeetingMode.Spectator);
-          }
-        }}
-      />
-      <FormField
-        field={Checkbox}
-        label="Enable Web Audio"
-        value=""
-        checked={isWebAudioEnabled}
-        onChange={toggleWebAudio}
-        infoText="Enable Web Audio to use Voice Focus"
-      />
-      {/* Amazon Chime Echo Reduction is a premium feature, please refer to the Pricing page for details.*/}
-      {isWebAudioEnabled && (
+        </Heading>
+        <FormField
+          field={Input}
+          label="Meeting Id"
+          value={meetingId}
+          infoText="Anyone with access to the meeting ID can join"
+          fieldProps={{
+            name: 'meetingId',
+            placeholder: 'Enter Meeting Id',
+          }}
+          errorText="Please enter a valid meeting ID"
+          error={meetingErr}
+          onChange={(e: ChangeEvent<HTMLInputElement>): void => {
+            setMeetingId(e.target.value);
+            if (meetingErr) {
+              setMeetingErr(false);
+            }
+          }}
+        />
+        <FormField
+          field={Input}
+          label="Name"
+          value={localUserName}
+          fieldProps={{
+            name: 'name',
+            placeholder: 'Enter Your Name',
+          }}
+          errorText="Please enter a valid name"
+          error={nameErr}
+          onChange={(e: ChangeEvent<HTMLInputElement>): void => {
+            setLocalUserName(e.target.value);
+            if (nameErr) {
+              setNameErr(false);
+            }
+          }}
+        />
+        <RegionSelection setRegion={setRegion} region={region} />
         <FormField
           field={Checkbox}
-          label="Enable Echo Reduction"
+          label="Join w/o Audio and Video"
           value=""
-          checked={isEchoReductionEnabled}
-          onChange={toggleEchoReduction}
-          infoText="Enable Echo Reduction (new meetings only)"
+          checked={meetingMode === MeetingMode.Spectator}
+          onChange={(): void => {
+            if (meetingMode === MeetingMode.Spectator) {
+              setMeetingMode(MeetingMode.Attendee);
+            } else {
+              setMeetingMode(MeetingMode.Spectator);
+            }
+          }}
         />
-      )}
-      {/* BlurSelection */}
-      {/* Background Video Transform Selections */}
-      <FormField
-        field={Select}
-        options={VIDEO_TRANSFORM_FILTER_OPTIONS}
-        onChange={(e: ChangeEvent<HTMLSelectElement>): void => {
-          setCpuUtilization(e.target.value);
-        }}
-        value={videoTransformCpuUtilization}
-        label="Background Filters CPU Utilization"
-      />
-      {/* Video uplink and downlink policies */}
-      {browserBehavior.isSimulcastSupported() && (
         <FormField
           field={Checkbox}
-          label="Enable Simulcast"
+          label="Enable Web Audio"
           value=""
-          checked={enableSimulcast}
-          onChange={toggleSimulcast}
+          checked={isWebAudioEnabled}
+          onChange={toggleWebAudio}
+          infoText="Enable Web Audio to use Voice Focus"
         />
-      )}
+        {/* Amazon Chime Echo Reduction is a premium feature, please refer to the Pricing page for details.*/}
+        {isWebAudioEnabled && (
+          <FormField
+            field={Checkbox}
+            label="Enable Echo Reduction"
+            value=""
+            checked={isEchoReductionEnabled}
+            onChange={toggleEchoReduction}
+            infoText="Enable Echo Reduction (new meetings only)"
+          />
+        )}
+        {/* BlurSelection */}
+        {/* Background Video Transform Selections */}
+        <FormField
+          field={Select}
+          options={VIDEO_TRANSFORM_FILTER_OPTIONS}
+          onChange={(e: ChangeEvent<HTMLSelectElement>): void => {
+            setCpuUtilization(e.target.value);
+          }}
+          value={videoTransformCpuUtilization}
+          label="Background Filters CPU Utilization"
+        />
+        {/* Video uplink and downlink policies */}
+        {browserBehavior.isSimulcastSupported() && (
+          <FormField
+            field={Checkbox}
+            label="Enable Simulcast"
+            value=""
+            checked={enableSimulcast}
+            onChange={toggleSimulcast}
+          />
+        )}
 
-      {browserBehavior.supportDownlinkBandwidthEstimation() && (
+        {browserBehavior.supportDownlinkBandwidthEstimation() && (
+          <FormField
+            field={Checkbox}
+            label="Use Priority-Based Downlink Policy"
+            value=""
+            checked={priorityBasedPolicy !== undefined}
+            onChange={togglePriorityBasedPolicy}
+          />
+        )}
         <FormField
           field={Checkbox}
-          label="Use Priority-Based Downlink Policy"
+          label="Keep Last Frame When Paused"
           value=""
-          checked={priorityBasedPolicy !== undefined}
-          onChange={togglePriorityBasedPolicy}
+          checked={keepLastFrameWhenPaused}
+          onChange={toggleKeepLastFrameWhenPaused}
         />
-      )}
-      <FormField
-        field={Checkbox}
-        label="Keep Last Frame When Paused"
-        value=""
-        checked={keepLastFrameWhenPaused}
-        onChange={toggleKeepLastFrameWhenPaused}
-      />
-      <Flex container layout="fill-space-centered" style={{ marginTop: '2.5rem' }}>
-        {isLoading ? <Spinner /> : <PrimaryButton label="Continue" onClick={handleJoinMeeting} />}
-      </Flex>
-      {errorMessage && (
-        <Modal size="md" onClose={closeError}>
-          <ModalHeader title={`Meeting ID: ${meetingId}`} />
-          <ModalBody>
-            <Card
-              title="Unable to join meeting"
-              description="There was an issue finding that meeting. The meeting may have already ended, or your authorization may have expired."
-              smallText={errorMessage}
-            />
-          </ModalBody>
-        </Modal>
-      )}
-      <DevicePermissionPrompt />
-    </form>
-  );
+        <Flex container layout="fill-space-centered" style={{ marginTop: '2.5rem' }}>
+          {isLoading ? <Spinner /> : <PrimaryButton label="Continue" onClick={handleJoinMeeting} />}
+        </Flex>
+        {errorMessage && (
+          <Modal size="md" onClose={closeError}>
+            <ModalHeader title={`Meeting ID: ${meetingId}`} />
+            <ModalBody>
+              <Card
+                title="Unable to join meeting"
+                description="There was an issue finding that meeting. The meeting may have already ended, or your authorization may have expired."
+                smallText={errorMessage}
+              />
+            </ModalBody>
+          </Modal>
+        )}
+        <DevicePermissionPrompt />
+      </form>
+    );
+  } else {
+    return (
+      <form>
+        <Heading tag="h1" level={4}>
+          Join a meeting
+        </Heading>
+        <Heading tag="h2" level={6} css="margin-top: 1rem">
+          Prepared API Endpoint
+        </Heading>
+        <a href={preparedApiEndpoint} target="_blank" rel="noreferrer">
+          {preparedApiEndpoint}
+        </a>
+        <Heading tag="h2" level={6} css="margin-top: 1rem">
+          Prepared Meeting ID
+        </Heading>
+        <a href={preparedApiEndpoint + '/' + preparedMeetingId} target="_blank" rel="noreferrer">
+          {preparedMeetingId}
+        </a>
+        <Heading tag="h2" level={6} css="margin-top: 1rem">
+          Prepared Attendee ID
+        </Heading>
+        <a href={preparedApiEndpoint + '/' + preparedMeetingId + '/attendees/' + preparedAttendeeId} target="_blank" rel="noreferrer">
+          {preparedAttendeeId}
+        </a>
+        <Flex container layout="fill-space-centered" style={{ marginTop: '2.5rem' }}>
+          {isLoading ? <Spinner /> : <PrimaryButton label="Continue" onClick={joinPreparedMeeting} />}
+        </Flex>
+        {errorMessage && (
+          <Modal size="md" onClose={closeError}>
+            <ModalHeader title={`Meeting ID: ${preparedMeetingId}`} />
+            <ModalBody>
+              <Card
+                title="Unable to join meeting"
+                description="There was an issue finding that meeting. The meeting may have already ended, or your authorization may have expired."
+                smallText={errorMessage}
+              />
+            </ModalBody>
+          </Modal>
+        )}
+        <DevicePermissionPrompt />
+      </form>
+    );
+  }
 };
 
 export default MeetingForm;
