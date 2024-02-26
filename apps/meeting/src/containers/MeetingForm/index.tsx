@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 import React, { ChangeEvent, useContext, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Checkbox,
   DeviceLabels,
@@ -26,6 +26,7 @@ import Spinner from '../../components/icons/Spinner';
 import DevicePermissionPrompt from '../DevicePermissionPrompt';
 import RegionSelection from './RegionSelection';
 import { createGetAttendeeCallback, createMeetingAndAttendee } from '../../utils/api';
+import { createGetPreparedAttendeeCallback, getPreparedMeeting } from '../../utils/preparedApi';
 import { useAppState } from '../../providers/AppStateProvider';
 import { MeetingMode, VideoFiltersCpuUtilization } from '../../types';
 import { MeetingManagerJoinOptions } from 'amazon-chime-sdk-component-library-react/lib/providers/MeetingProvider/types';
@@ -71,6 +72,10 @@ const MeetingForm: React.FC = () => {
   const { errorMessage, updateErrorMessage } = useContext(getErrorContext());
   const navigate = useNavigate();
   const browserBehavior = new DefaultBrowserBehavior();
+  const params = new URLSearchParams(useLocation().search);
+  const preparedApiEndpoint = params.get('preparedApiEndpoint');
+  const preparedMeetingId = params.get('preparedMeetingId');
+  const preparedAttendeeId = params.get('preparedAttendeeId');
 
   const handleJoinMeeting = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -135,6 +140,59 @@ const MeetingForm: React.FC = () => {
     }
   };
 
+  const joinPreparedMeeting = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!preparedApiEndpoint || !preparedMeetingId || !preparedAttendeeId) {
+      return;
+    }
+
+    setIsLoading(true);
+    meetingManager.getAttendee = createGetPreparedAttendeeCallback(preparedApiEndpoint, preparedMeetingId);
+
+    try {
+      const { JoinInfo } = await getPreparedMeeting(preparedApiEndpoint, preparedMeetingId, preparedAttendeeId);
+      setJoinInfo(JoinInfo);
+      setMeetingId(JoinInfo.Title);
+      const meetingSessionConfiguration = new MeetingSessionConfiguration(JoinInfo?.Meeting, JoinInfo?.Attendee);
+      if (
+        meetingConfig.postLogger &&
+        meetingSessionConfiguration.meetingId &&
+        meetingSessionConfiguration.credentials &&
+        meetingSessionConfiguration.credentials.attendeeId
+      ) {
+        const existingMetadata = meetingConfig.postLogger.metadata;
+        meetingConfig.postLogger.metadata = {
+          ...existingMetadata,
+          meetingId: meetingSessionConfiguration.meetingId,
+          attendeeId: meetingSessionConfiguration.credentials.attendeeId,
+        };
+      }
+
+      setRegion(JoinInfo.Meeting.MediaRegion);
+      meetingSessionConfiguration.enableSimulcastForUnifiedPlanChromiumBasedBrowsers = enableSimulcast;
+      if (priorityBasedPolicy) {
+        meetingSessionConfiguration.videoDownlinkBandwidthPolicy = priorityBasedPolicy;
+      }
+      meetingSessionConfiguration.keepLastFrameWhenPaused = keepLastFrameWhenPaused;
+      const options: MeetingManagerJoinOptions = {
+        deviceLabels: meetingMode === MeetingMode.Spectator ? DeviceLabels.None : DeviceLabels.AudioAndVideo,
+        enableWebAudio: isWebAudioEnabled,
+      };
+
+      await meetingManager.join(meetingSessionConfiguration, options);
+      if (meetingMode === MeetingMode.Spectator) {
+        await meetingManager.start();
+        navigate(`${routes.MEETING}/${meetingId}?${params.toString()}`);
+      } else {
+        setMeetingMode(MeetingMode.Attendee);
+        navigate(`${routes.DEVICE}?${params.toString()}`);
+      }
+    } catch (error) {
+      updateErrorMessage((error as Error).message);
+    }
+  };
+
   const closeError = (): void => {
     updateErrorMessage('');
     setMeetingId('');
@@ -142,6 +200,7 @@ const MeetingForm: React.FC = () => {
     setIsLoading(false);
   };
 
+  if (!preparedApiEndpoint || !preparedMeetingId || !preparedAttendeeId) {
   return (
     <form>
       <Heading tag="h1" level={4} css="margin-bottom: 1rem">
@@ -279,6 +338,49 @@ const MeetingForm: React.FC = () => {
       <DevicePermissionPrompt />
     </form>
   );
+  } else {
+    return (
+      <form>
+        <Heading tag="h1" level={4}>
+          Join a meeting
+        </Heading>
+        <Heading tag="h2" level={6} css="margin-top: 1rem">
+          Prepared API Endpoint
+        </Heading>
+        <a href={preparedApiEndpoint} target="_blank" rel="noreferrer">
+          {preparedApiEndpoint}
+        </a>
+        <Heading tag="h2" level={6} css="margin-top: 1rem">
+          Prepared Meeting ID
+        </Heading>
+        <a href={preparedApiEndpoint + '/' + preparedMeetingId} target="_blank" rel="noreferrer">
+          {preparedMeetingId}
+        </a>
+        <Heading tag="h2" level={6} css="margin-top: 1rem">
+          Prepared Attendee ID
+        </Heading>
+        <a href={preparedApiEndpoint + '/' + preparedMeetingId + '/attendees/' + preparedAttendeeId} target="_blank" rel="noreferrer">
+          {preparedAttendeeId}
+        </a>
+        <Flex container layout="fill-space-centered" style={{ marginTop: '2.5rem' }}>
+          {isLoading ? <Spinner /> : <PrimaryButton label="Continue" onClick={joinPreparedMeeting} />}
+        </Flex>
+        {errorMessage && (
+          <Modal size="md" onClose={closeError}>
+            <ModalHeader title={`Meeting ID: ${preparedMeetingId}`} />
+            <ModalBody>
+              <Card
+                title="Unable to join meeting"
+                description="There was an issue finding that meeting. The meeting may have already ended, or your authorization may have expired."
+                smallText={errorMessage}
+              />
+            </ModalBody>
+          </Modal>
+        )}
+        <DevicePermissionPrompt />
+      </form>
+    );
+  }
 };
 
 export default MeetingForm;
