@@ -3,7 +3,7 @@
 
 const express = require('express');
 const compression = require('compression');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID: uuidv4 } = require('crypto');
 const morganBody = require('morgan-body');
 const bodyParser = require('body-parser');
 

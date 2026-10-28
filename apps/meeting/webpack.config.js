@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 const path = require('path');
-const InlineChunkHtmlPlugin = require('react-dev-utils/InlineChunkHtmlPlugin');
+const InlineChunkHtmlPlugin = require('./scripts/inline-chunk-html-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 
 const app = 'meeting';
@@ -35,6 +35,7 @@ module.exports = {
       react: path.resolve('./node_modules/react'),
       'styled-components': path.resolve('./node_modules/styled-components'),
       'react-dom': path.resolve('./node_modules/react-dom'),
+      'amazon-chime-sdk-js': path.resolve('./node_modules/amazon-chime-sdk-js'),
     },
     fallback: {
       fs: false,
@@ -58,10 +59,12 @@ module.exports = {
     new InlineChunkHtmlPlugin(HtmlWebpackPlugin, [new RegExp(`${app}`)]),
   ],
   devServer: {
-    proxy: {
-      context: ['/join', '/attendee', '/end', '/logs'],
-      target: 'http://127.0.0.1:8080',
-    },
+    proxy: [
+      {
+        context: ['/join', '/attendee', '/end', '/logs'],
+        target: 'http://127.0.0.1:8080',
+      },
+    ],
     historyApiFallback: {
       index: `/${app}.html`,
     },
@@ -78,7 +81,7 @@ module.exports = {
     hot: false,
     host: '0.0.0.0',
     port: 9000,
-    https: true,
+    server: 'https',
     open: true,
   },
 };
