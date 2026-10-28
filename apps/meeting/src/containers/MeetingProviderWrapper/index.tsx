@@ -3,45 +3,57 @@
 
 import React, { PropsWithChildren } from 'react';
 import { Route, Routes } from 'react-router-dom';
-import { AudioInputDevice, Device, VoiceFocusModelName, VoiceFocusTransformDevice } from 'amazon-chime-sdk-js';
+import { AudioInputDevice, VoiceFocusTransformDevice } from 'amazon-chime-sdk-js';
 import {
   BackgroundBlurProvider,
   BackgroundReplacementProvider,
   MeetingProvider,
+  useLogger,
   useVoiceFocus,
-  VoiceFocusProvider,
 } from 'amazon-chime-sdk-component-library-react';
+import { useAppState } from '../../providers/AppStateProvider';
+import usePreMeetingDeviceController from '../../hooks/usePreMeetingDeviceController';
 
 import routes from '../../constants/routes';
 import { NavigationProvider } from '../../providers/NavigationProvider';
 import NoMeetingRedirect from '../NoMeetingRedirect';
 import { Meeting, Home, DeviceSetup } from '../../views';
 import MeetingEventObserver from '../MeetingEventObserver';
-import { useAppState } from '../../providers/AppStateProvider';
 import { VideoFiltersCpuUtilization } from '../../types';
 
 const MeetingProviderWithDeviceReplacement: React.FC<PropsWithChildren> = ({ children }) => {
   const { addVoiceFocus } = useVoiceFocus();
+  const { enableMaxContentShares, isVoiceFocusDesired } = useAppState();
 
-  const onDeviceReplacement = (
-    nextDevice: string,
-    currentDevice: AudioInputDevice
-  ): Promise<Device | VoiceFocusTransformDevice> => {
+  const onDeviceReplacement = (nextDevice: string, currentDevice: AudioInputDevice) => {
     if (currentDevice instanceof VoiceFocusTransformDevice) {
       return addVoiceFocus(nextDevice);
     }
     return Promise.resolve(nextDevice);
   };
 
+  const deviceController = usePreMeetingDeviceController();
+
+  // MeetingProvider captures the deviceController once at mount, so remount whenever the controller
+  // is created/destroyed or rebuilt because Voice Focus flipped Web Audio (fixed at construction).
+  const meetingProviderKey = `persistent-${!!deviceController}-webaudio-${isVoiceFocusDesired}`;
+
   const meetingConfigValue = {
-    onDeviceReplacement,
+    onDeviceReplacement: onDeviceReplacement as any,
+    ...(enableMaxContentShares ? { maxContentShares: 2 } : {}),
+    ...(deviceController ? { deviceController } : {}),
   };
 
-  return <MeetingProvider {...meetingConfigValue}>{children}</MeetingProvider>;
+  return (
+    <MeetingProvider key={meetingProviderKey} {...meetingConfigValue}>
+      {children}
+    </MeetingProvider>
+  );
 };
 
 const MeetingProviderWrapper: React.FC = () => {
-  const { isWebAudioEnabled, videoTransformCpuUtilization, imageBlob, joinInfo } = useAppState();
+  const { videoTransformCpuUtilization, imageBlob } = useAppState();
+  const logger = useLogger();
 
   const isFilterEnabled = videoTransformCpuUtilization !== VideoFiltersCpuUtilization.Disabled;
 
@@ -74,33 +86,6 @@ const MeetingProviderWrapper: React.FC = () => {
     );
   };
 
-  function voiceFocusName(name: string): VoiceFocusModelName {
-    if (name && ['default', 'ns_es'].includes(name)) {
-      return name as VoiceFocusModelName;
-    }
-    return 'default';
-  }
-
-  function getVoiceFocusSpecName(): VoiceFocusModelName {
-    if (joinInfo && joinInfo.Meeting?.MeetingFeatures?.Audio?.EchoReduction === 'AVAILABLE') {
-      return voiceFocusName('ns_es');
-    }
-    return voiceFocusName('default');
-  }
-
-  const vfConfigValue = {
-    spec: { name: getVoiceFocusSpecName() },
-    createMeetingResponse: joinInfo,
-  };
-
-  const getMeetingProviderWrapperWithVF = (children: React.ReactNode) => {
-    return (
-      <VoiceFocusProvider {...vfConfigValue}>
-        <MeetingProviderWithDeviceReplacement>{children}</MeetingProviderWithDeviceReplacement>
-      </VoiceFocusProvider>
-    );
-  };
-
   const getWrapperWithVideoFilter = (children: React.ReactNode) => {
     let filterCPUUtilization = parseInt(videoTransformCpuUtilization, 10);
     if (!filterCPUUtilization) {
@@ -108,30 +93,22 @@ const MeetingProviderWrapper: React.FC = () => {
     }
     console.log(`Using ${filterCPUUtilization} background blur and replacement`);
     return (
-      <BackgroundBlurProvider options={{ filterCPUUtilization }}>
-        <BackgroundReplacementProvider options={{ imageBlob, filterCPUUtilization }}>
+      <BackgroundBlurProvider options={{ filterCPUUtilization, logger }}>
+        <BackgroundReplacementProvider options={{ imageBlob, filterCPUUtilization, logger }}>
           {children}
         </BackgroundReplacementProvider>
       </BackgroundBlurProvider>
     );
   };
 
-  const getMeetingProvider = (children: React.ReactNode) => {
-    return <MeetingProvider>{children}</MeetingProvider>;
-  };
-
   const getMeetingProviderWithFeatures = (): React.ReactNode => {
-    let children = getMeetingProviderWrapper();
+    const baseWrapper = getMeetingProviderWrapper();
 
-    if (isFilterEnabled) {
-      children = getWrapperWithVideoFilter(children);
-    }
-    if (isWebAudioEnabled) {
-      children = getMeetingProviderWrapperWithVF(children);
-    } else {
-      children = getMeetingProvider(children);
-    }
-    return children;
+    return (
+      <MeetingProviderWithDeviceReplacement>
+        {isFilterEnabled ? getWrapperWithVideoFilter(baseWrapper) : baseWrapper}
+      </MeetingProviderWithDeviceReplacement>
+    );
   };
 
   return <>{imageBlob === undefined ? <div>Loading Assets</div> : getMeetingProviderWithFeatures()}</>;

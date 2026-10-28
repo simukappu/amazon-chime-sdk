@@ -1,7 +1,7 @@
 // Copyright 2020-2021 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import React, { ChangeEvent, useContext, useState } from 'react';
+import React, { ChangeEvent, useContext, useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Checkbox,
@@ -10,12 +10,14 @@ import {
   FormField,
   Heading,
   Input,
+  MeetingManagerJoinOptions,
   Modal,
   ModalBody,
   ModalHeader,
   PrimaryButton,
   Select,
   useMeetingManager,
+  useVoiceFocus,
 } from 'amazon-chime-sdk-component-library-react';
 import { DefaultBrowserBehavior, MeetingSessionConfiguration } from 'amazon-chime-sdk-js';
 
@@ -25,11 +27,15 @@ import Card from '../../components/Card';
 import Spinner from '../../components/icons/Spinner';
 import DevicePermissionPrompt from '../DevicePermissionPrompt';
 import RegionSelection from './RegionSelection';
-import { createGetAttendeeCallback, createMeetingAndAttendee } from '../../utils/api';
-import { createGetPreparedAttendeeCallback, getPreparedMeeting } from '../../utils/preparedApi';
+import {
+  createGetAttendeeCallback,
+  createMeetingAndAttendee,
+  JoinMeetingInfo,
+  normalizeMeetingId,
+} from '../../utils/api';
+import { createGetPreparedAttendeeCallback, getPreparedJoinToken, getPreparedMeeting } from '../../utils/preparedApi';
 import { useAppState } from '../../providers/AppStateProvider';
 import { MeetingMode, VideoFiltersCpuUtilization } from '../../types';
-import { MeetingManagerJoinOptions } from 'amazon-chime-sdk-component-library-react/lib/providers/MeetingProvider/types';
 import meetingConfig from '../../meetingConfig';
 
 const VIDEO_TRANSFORM_FILTER_OPTIONS = [
@@ -41,6 +47,7 @@ const VIDEO_TRANSFORM_FILTER_OPTIONS = [
 
 const MeetingForm: React.FC = () => {
   const meetingManager = useMeetingManager();
+  const { isVoiceFocusSupported } = useVoiceFocus();
   const {
     region,
     meetingId,
@@ -49,26 +56,33 @@ const MeetingForm: React.FC = () => {
     enableSimulcast,
     priorityBasedPolicy,
     keepLastFrameWhenPaused,
-    isWebAudioEnabled,
     videoTransformCpuUtilization: videoTransformCpuUtilization,
     setJoinInfo,
+    joinInfo,
     isEchoReductionEnabled,
-    toggleEchoReduction,
-    toggleWebAudio,
+    isVoiceFocusDesired,
+    enableMaxContentShares,
     toggleSimulcast,
     togglePriorityBasedPolicy,
     toggleKeepLastFrameWhenPaused,
+    toggleMaxContentShares,
     setMeetingMode,
     setMeetingId,
     setLocalUserName,
     setRegion,
     setCpuUtilization,
     skipDeviceSelection,
+    toggleVoiceFocusDesired,
+    toggleEchoReduction,
+    setIsVoiceFocusEnabled,
     toggleMeetingJoinDeviceSelection,
+    isPreMeetingDeviceSetupAllowed,
+    togglePreMeetingDeviceSetupAllowed,
   } = useAppState();
   const [meetingErr, setMeetingErr] = useState(false);
   const [nameErr, setNameErr] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [shouldJoinAfterCheck, setShouldJoinAfterCheck] = useState(false);
   const { errorMessage, updateErrorMessage } = useContext(getErrorContext());
   const navigate = useNavigate();
   const browserBehavior = new DefaultBrowserBehavior();
@@ -76,31 +90,53 @@ const MeetingForm: React.FC = () => {
   const preparedApiEndpoint = params.get('preparedApiEndpoint');
   const preparedMeetingId = params.get('preparedMeetingId');
   const preparedAttendeeId = params.get('preparedAttendeeId');
+  const [preparedJoinToken] = useState(getPreparedJoinToken);
+  const isPreparedMeeting = !!(preparedApiEndpoint && preparedMeetingId && preparedAttendeeId);
+  // Keep prepared meeting parameters in the query string while moving between pages
+  const preparedQuery = isPreparedMeeting ? `?${params.toString()}` : '';
 
-  const handleJoinMeeting = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const id = meetingId.trim().toLocaleLowerCase();
-    const attendeeName = localUserName.trim();
+  // Join meeting when Voice Focus support check completes
+  useEffect(() => {
+    if (shouldJoinAfterCheck && isVoiceFocusSupported !== undefined && joinInfo) {
+      setShouldJoinAfterCheck(false);
+      joinMeeting(joinInfo);
+    }
+  }, [isVoiceFocusSupported, shouldJoinAfterCheck, joinInfo]);
 
-    if (!id || !attendeeName) {
-      if (!attendeeName) {
-        setNameErr(true);
-      }
+  const validateInput = (id: string, attendeeName: string): boolean => {
+    let isValid = true;
 
-      if (!id) {
-        setMeetingErr(true);
-      }
-
-      return;
+    if (!attendeeName) {
+      setNameErr(true);
+      isValid = false;
     }
 
-    setIsLoading(true);
-    meetingManager.getAttendee = createGetAttendeeCallback(id);
+    if (!id) {
+      setMeetingErr(true);
+      isValid = false;
+    }
 
+    return isValid;
+  };
+
+  const createMeetingAndAttendeeResponse = async (
+    id: string,
+    attendeeName: string
+  ): Promise<JoinMeetingInfo | null> => {
     try {
       const { JoinInfo } = await createMeetingAndAttendee(id, attendeeName, region, isEchoReductionEnabled);
-      setJoinInfo(JoinInfo);
-      const meetingSessionConfiguration = new MeetingSessionConfiguration(JoinInfo?.Meeting, JoinInfo?.Attendee);
+      setJoinInfo(JoinInfo); // This will trigger VF support check in VoiceFocusProvider
+      return JoinInfo;
+    } catch (error) {
+      updateErrorMessage((error as Error).message);
+      setIsLoading(false);
+      return null;
+    }
+  };
+
+  const joinMeeting = async (joinInfo: JoinMeetingInfo): Promise<void> => {
+    try {
+      const meetingSessionConfiguration = new MeetingSessionConfiguration(joinInfo?.Meeting, joinInfo?.Attendee);
       if (
         meetingConfig.postLogger &&
         meetingSessionConfiguration.meetingId &&
@@ -115,29 +151,73 @@ const MeetingForm: React.FC = () => {
         };
       }
 
-      setRegion(JoinInfo.Meeting.MediaRegion);
+      setRegion(joinInfo!.Meeting.MediaRegion);
       meetingSessionConfiguration.enableSimulcastForUnifiedPlanChromiumBasedBrowsers = enableSimulcast;
       if (priorityBasedPolicy) {
         meetingSessionConfiguration.videoDownlinkBandwidthPolicy = priorityBasedPolicy;
       }
       meetingSessionConfiguration.keepLastFrameWhenPaused = keepLastFrameWhenPaused;
+
+      // Enable Voice Focus when user has desire to enable it and Voice Focus is supported
+      const isVoiceFocusEnabled = isVoiceFocusDesired && isVoiceFocusSupported === true;
+      setIsVoiceFocusEnabled(isVoiceFocusEnabled);
+
       const options: MeetingManagerJoinOptions = {
         deviceLabels: meetingMode === MeetingMode.Spectator ? DeviceLabels.None : DeviceLabels.AudioAndVideo,
-        enableWebAudio: isWebAudioEnabled,
+        enableWebAudio: isVoiceFocusEnabled,
         skipDeviceSelection,
       };
 
-      await meetingManager.join(meetingSessionConfiguration, options);
       if (meetingMode === MeetingMode.Spectator) {
+        await meetingManager.join(meetingSessionConfiguration as any, options);
         await meetingManager.start();
-        navigate(`${routes.MEETING}/${meetingId}`);
-      } else {
-        setMeetingMode(MeetingMode.Attendee);
-        navigate(routes.DEVICE);
+        navigate(`${routes.MEETING}/${meetingId}${preparedQuery}`);
+        setIsLoading(false);
+        return;
       }
+
+      setMeetingMode(MeetingMode.Attendee);
+
+      // Opt-in: defer join to the device-setup page so devices are selected on the persistent
+      // controller before the meeting session is created.
+      if (isPreMeetingDeviceSetupAllowed) {
+        navigate(`${routes.DEVICE}${preparedQuery}`);
+        setIsLoading(false);
+        return;
+      }
+
+      await meetingManager.join(meetingSessionConfiguration as any, options);
+      navigate(`${routes.DEVICE}${preparedQuery}`);
+      setIsLoading(false);
     } catch (error) {
       updateErrorMessage((error as Error).message);
+      setIsLoading(false);
     }
+  };
+
+  const handleJoinMeeting = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const id = normalizeMeetingId(meetingId);
+    const attendeeName = localUserName.trim();
+
+    if (!validateInput(id, attendeeName)) {
+      return;
+    }
+
+    setIsLoading(true);
+    meetingManager.getAttendee = createGetAttendeeCallback(id);
+
+    const joinInfo = await createMeetingAndAttendeeResponse(id, attendeeName);
+    if (!joinInfo) return;
+
+    if (isVoiceFocusDesired && isVoiceFocusSupported === undefined) {
+      // Wait for Voice Focus support check
+      setShouldJoinAfterCheck(true);
+      return;
+    }
+
+    // Join meeting if Voice Focus is not desired or Voice Focus support check is completed
+    await joinMeeting(joinInfo);
   };
 
   const joinPreparedMeeting = async (e: React.FormEvent) => {
@@ -146,51 +226,33 @@ const MeetingForm: React.FC = () => {
     if (!preparedApiEndpoint || !preparedMeetingId || !preparedAttendeeId) {
       return;
     }
+    if (!preparedJoinToken) {
+      updateErrorMessage('Join token was not passed. Open this page from your meeting in the Rails application.');
+      return;
+    }
 
     setIsLoading(true);
     meetingManager.getAttendee = createGetPreparedAttendeeCallback(preparedApiEndpoint, preparedMeetingId);
 
+    let preparedJoinInfo;
     try {
-      const { JoinInfo } = await getPreparedMeeting(preparedApiEndpoint, preparedMeetingId, preparedAttendeeId);
-      setJoinInfo(JoinInfo);
+      const { JoinInfo } = await getPreparedMeeting(preparedApiEndpoint, preparedMeetingId, preparedAttendeeId, preparedJoinToken);
+      preparedJoinInfo = JoinInfo;
       setMeetingId(JoinInfo.Title);
-      const meetingSessionConfiguration = new MeetingSessionConfiguration(JoinInfo?.Meeting, JoinInfo?.Attendee);
-      if (
-        meetingConfig.postLogger &&
-        meetingSessionConfiguration.meetingId &&
-        meetingSessionConfiguration.credentials &&
-        meetingSessionConfiguration.credentials.attendeeId
-      ) {
-        const existingMetadata = meetingConfig.postLogger.metadata;
-        meetingConfig.postLogger.metadata = {
-          ...existingMetadata,
-          meetingId: meetingSessionConfiguration.meetingId,
-          attendeeId: meetingSessionConfiguration.credentials.attendeeId,
-        };
-      }
-
-      setRegion(JoinInfo.Meeting.MediaRegion);
-      meetingSessionConfiguration.enableSimulcastForUnifiedPlanChromiumBasedBrowsers = enableSimulcast;
-      if (priorityBasedPolicy) {
-        meetingSessionConfiguration.videoDownlinkBandwidthPolicy = priorityBasedPolicy;
-      }
-      meetingSessionConfiguration.keepLastFrameWhenPaused = keepLastFrameWhenPaused;
-      const options: MeetingManagerJoinOptions = {
-        deviceLabels: meetingMode === MeetingMode.Spectator ? DeviceLabels.None : DeviceLabels.AudioAndVideo,
-        enableWebAudio: isWebAudioEnabled,
-      };
-
-      await meetingManager.join(meetingSessionConfiguration, options);
-      if (meetingMode === MeetingMode.Spectator) {
-        await meetingManager.start();
-        navigate(`${routes.MEETING}/${meetingId}?${params.toString()}`);
-      } else {
-        setMeetingMode(MeetingMode.Attendee);
-        navigate(`${routes.DEVICE}?${params.toString()}`);
-      }
+      setJoinInfo(JoinInfo); // This will trigger VF support check in VoiceFocusProvider
     } catch (error) {
       updateErrorMessage((error as Error).message);
+      setIsLoading(false);
+      return;
     }
+
+    if (isVoiceFocusDesired && isVoiceFocusSupported === undefined) {
+      // Wait for Voice Focus support check
+      setShouldJoinAfterCheck(true);
+      return;
+    }
+
+    await joinMeeting(preparedJoinInfo);
   };
 
   const closeError = (): void => {
@@ -200,7 +262,50 @@ const MeetingForm: React.FC = () => {
     setIsLoading(false);
   };
 
-  if (!preparedApiEndpoint || !preparedMeetingId || !preparedAttendeeId) {
+  if (isPreparedMeeting) {
+    return (
+      <form>
+        <Heading tag="h1" level={4}>
+          Join a meeting
+        </Heading>
+        <Heading tag="h2" level={6} css="margin-top: 1rem">
+          Prepared API Endpoint
+        </Heading>
+        <a href={preparedApiEndpoint!} target="_blank" rel="noreferrer">
+          {preparedApiEndpoint}
+        </a>
+        <Heading tag="h2" level={6} css="margin-top: 1rem">
+          Prepared Meeting ID
+        </Heading>
+        <a href={`${preparedApiEndpoint}/${preparedMeetingId}`} target="_blank" rel="noreferrer">
+          {preparedMeetingId}
+        </a>
+        <Heading tag="h2" level={6} css="margin-top: 1rem">
+          Prepared Attendee ID
+        </Heading>
+        <a href={`${preparedApiEndpoint}/${preparedMeetingId}/attendees/${preparedAttendeeId}`} target="_blank" rel="noreferrer">
+          {preparedAttendeeId}
+        </a>
+        <Flex container layout="fill-space-centered" style={{ marginTop: '2.5rem' }}>
+          {isLoading ? <Spinner /> : <PrimaryButton label="Continue" onClick={joinPreparedMeeting} disabled={isLoading} />}
+        </Flex>
+        {errorMessage && (
+          <Modal size="md" onClose={closeError}>
+            <ModalHeader title={`Meeting ID: ${preparedMeetingId}`} />
+            <ModalBody>
+              <Card
+                title="Unable to join meeting"
+                description="There was an issue finding that meeting. The meeting may have already ended, or your authorization may have expired."
+                smallText={errorMessage}
+              />
+            </ModalBody>
+          </Modal>
+        )}
+        <DevicePermissionPrompt />
+      </form>
+    );
+  }
+
   return (
     <form>
       <Heading tag="h1" level={4} css="margin-bottom: 1rem">
@@ -257,14 +362,14 @@ const MeetingForm: React.FC = () => {
       />
       <FormField
         field={Checkbox}
-        label="Enable Web Audio"
+        label="Enable Voice Focus"
         value=""
-        checked={isWebAudioEnabled}
-        onChange={toggleWebAudio}
-        infoText="Enable Web Audio to use Voice Focus"
+        checked={isVoiceFocusDesired}
+        onChange={toggleVoiceFocusDesired}
+        infoText="Reduce background noise during calls"
       />
       {/* Amazon Chime Echo Reduction is a premium feature, please refer to the Pricing page for details.*/}
-      {isWebAudioEnabled && (
+      {isVoiceFocusDesired && (
         <FormField
           field={Checkbox}
           label="Enable Echo Reduction"
@@ -314,14 +419,30 @@ const MeetingForm: React.FC = () => {
       />
       <FormField
         field={Checkbox}
-        label="Skip meeting join device selection"
+        label="Skip Auto Device Selection on Join"
         value=""
         checked={skipDeviceSelection}
         onChange={toggleMeetingJoinDeviceSelection}
         infoText="Please select the devices manually to successfully join a meeting"
       />
+      <FormField
+        field={Checkbox}
+        label="Set Up Devices Before Joining"
+        value=""
+        checked={isPreMeetingDeviceSetupAllowed}
+        onChange={togglePreMeetingDeviceSetupAllowed}
+        infoText="Preview and select devices on the setup page before the meeting is joined"
+      />
+      <FormField
+        field={Checkbox}
+        label="Enable Multiple Content Shares (max: 2)"
+        value=""
+        checked={enableMaxContentShares}
+        onChange={toggleMaxContentShares}
+        infoText="Allow up to 2 simultaneous content shares in the meeting"
+      />
       <Flex container layout="fill-space-centered" style={{ marginTop: '2.5rem' }}>
-        {isLoading ? <Spinner /> : <PrimaryButton label="Continue" onClick={handleJoinMeeting} />}
+        {isLoading ? <Spinner /> : <PrimaryButton label="Continue" onClick={handleJoinMeeting} disabled={isLoading} />}
       </Flex>
       {errorMessage && (
         <Modal size="md" onClose={closeError}>
@@ -338,49 +459,6 @@ const MeetingForm: React.FC = () => {
       <DevicePermissionPrompt />
     </form>
   );
-  } else {
-    return (
-      <form>
-        <Heading tag="h1" level={4}>
-          Join a meeting
-        </Heading>
-        <Heading tag="h2" level={6} css="margin-top: 1rem">
-          Prepared API Endpoint
-        </Heading>
-        <a href={preparedApiEndpoint} target="_blank" rel="noreferrer">
-          {preparedApiEndpoint}
-        </a>
-        <Heading tag="h2" level={6} css="margin-top: 1rem">
-          Prepared Meeting ID
-        </Heading>
-        <a href={preparedApiEndpoint + '/' + preparedMeetingId} target="_blank" rel="noreferrer">
-          {preparedMeetingId}
-        </a>
-        <Heading tag="h2" level={6} css="margin-top: 1rem">
-          Prepared Attendee ID
-        </Heading>
-        <a href={preparedApiEndpoint + '/' + preparedMeetingId + '/attendees/' + preparedAttendeeId} target="_blank" rel="noreferrer">
-          {preparedAttendeeId}
-        </a>
-        <Flex container layout="fill-space-centered" style={{ marginTop: '2.5rem' }}>
-          {isLoading ? <Spinner /> : <PrimaryButton label="Continue" onClick={joinPreparedMeeting} />}
-        </Flex>
-        {errorMessage && (
-          <Modal size="md" onClose={closeError}>
-            <ModalHeader title={`Meeting ID: ${preparedMeetingId}`} />
-            <ModalBody>
-              <Card
-                title="Unable to join meeting"
-                description="There was an issue finding that meeting. The meeting may have already ended, or your authorization may have expired."
-                smallText={errorMessage}
-              />
-            </ModalBody>
-          </Modal>
-        )}
-        <DevicePermissionPrompt />
-      </form>
-    );
-  }
 };
 
 export default MeetingForm;

@@ -24,7 +24,7 @@ import VideoInputTransformControl from '../../components/MeetingControls/VideoIn
 const MeetingControls: React.FC = () => {
   const { toggleNavbar, closeRoster, showRoster } = useNavigation();
   const { isUserActive } = useUserActivityState();
-  const { isWebAudioEnabled, videoTransformCpuUtilization } = useAppState();
+  const { isVoiceFocusEnabled, videoTransformCpuUtilization } = useAppState();
   const videoTransformsEnabled = videoTransformCpuUtilization !== VideoFiltersCpuUtilization.Disabled;
 
   const handleToggle = (): void => {
@@ -35,7 +35,7 @@ const MeetingControls: React.FC = () => {
   };
 
   return (
-    <StyledControls className="controls" active={!!isUserActive}>
+    <StyledControls className="controls" $active={!!isUserActive}>
       <ControlBar
         className="controls-menu"
         layout="undocked-horizontal"
@@ -47,7 +47,7 @@ const MeetingControls: React.FC = () => {
           onClick={handleToggle}
           label="Menu"
         />
-        { isWebAudioEnabled ? <AudioInputVFControl /> :  <AudioInputControl /> }
+        { isVoiceFocusEnabled ? <AudioInputVFControl /> :  <AudioInputControl /> }
         { videoTransformsEnabled ? <VideoInputTransformControl /> : <VideoInputControl/> }
         <ContentShareControl />
         <AudioOutputControl />

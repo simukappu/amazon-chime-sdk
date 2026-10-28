@@ -27,27 +27,22 @@ const EndMeetingControl: React.FC = () => {
   const { meetingId } = useAppState();
   const navigate = useNavigate();
   const params = new URLSearchParams(useLocation().search);
+  const preparedApiEndpoint = params.get('preparedApiEndpoint');
+  const preparedMeetingId = params.get('preparedMeetingId');
+  const homePath = preparedApiEndpoint && preparedMeetingId ? `${routes.HOME}?${params.toString()}` : routes.HOME;
 
   const leaveMeeting = async (): Promise<void> => {
-    if (params.has('preparedApiEndpoint') && params.has('preparedMeetingId') && params.has('preparedAttendeeId')) {
-      navigate(`${routes.HOME}?${params.toString()}`);
-    } else {
-      navigate(routes.HOME);
-    }
+    navigate(homePath);
   };
 
   const endMeetingForAll = async (): Promise<void> => {
     try {
-      if (meetingId) {
-        const preparedApiEndpoint = params.get('preparedApiEndpoint');
-        const preparedMeetingId = params.get('preparedMeetingId');
-        if (preparedApiEndpoint && preparedMeetingId) {
-          await endPreparedMeeting(preparedApiEndpoint, preparedMeetingId);
-          navigate(`${routes.HOME}?${params.toString()}`);
-        } else {
-          await endMeeting(meetingId);
-          navigate(routes.HOME);
-        }
+      if (preparedApiEndpoint && preparedMeetingId) {
+        await endPreparedMeeting(preparedApiEndpoint, preparedMeetingId);
+        navigate(homePath);
+      } else if (meetingId) {
+        await endMeeting(meetingId);
+        navigate(routes.HOME);
       }
     } catch (e) {
       logger.error(`Could not end meeting: ${e}`);

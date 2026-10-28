@@ -11,10 +11,15 @@ import {
   Modal,
   ModalBody,
   ModalHeader,
+  DeviceLabels,
+  MeetingManagerJoinOptions,
 } from 'amazon-chime-sdk-component-library-react';
+import { MeetingSessionConfiguration } from 'amazon-chime-sdk-js';
 
 import routes from '../constants/routes';
 import Card from '../components/Card';
+import { createGetAttendeeCallback, normalizeMeetingId } from '../utils/api';
+import { createGetPreparedAttendeeCallback } from '../utils/preparedApi';
 import { useAppState } from '../providers/AppStateProvider';
 
 const MeetingJoinDetails = () => {
@@ -22,20 +27,34 @@ const MeetingJoinDetails = () => {
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const { meetingId, localUserName } = useAppState();
+  const { meetingId, localUserName, isPreMeetingDeviceSetupAllowed, joinInfo, isVoiceFocusEnabled, skipDeviceSelection } =
+    useAppState();
   const params = new URLSearchParams(useLocation().search);
+  const preparedApiEndpoint = params.get('preparedApiEndpoint');
+  const preparedMeetingId = params.get('preparedMeetingId');
+  const isPreparedMeeting = !!(preparedApiEndpoint && preparedMeetingId && params.get('preparedAttendeeId'));
 
   const handleJoinMeeting = async () => {
     setIsLoading(true);
 
     try {
+      if (isPreMeetingDeviceSetupAllowed) {
+        // MeetingProvider remounted with a new MeetingManager when the device controller was created.
+        meetingManager.getAttendee = isPreparedMeeting
+          ? createGetPreparedAttendeeCallback(preparedApiEndpoint!, preparedMeetingId!)
+          : createGetAttendeeCallback(normalizeMeetingId(meetingId));
+        const meetingSessionConfiguration = new MeetingSessionConfiguration(joinInfo!.Meeting, joinInfo!.Attendee);
+        const options: MeetingManagerJoinOptions = {
+          deviceLabels: DeviceLabels.AudioAndVideo,
+          enableWebAudio: isVoiceFocusEnabled,
+          skipDeviceSelection,
+        };
+        await meetingManager.join(meetingSessionConfiguration as any, options);
+      }
+
       await meetingManager.start();
       setIsLoading(false);
-      if (params.has('preparedApiEndpoint') && params.has('preparedMeetingId') && params.has('preparedAttendeeId')) {
-        navigate(`${routes.MEETING}/${meetingId}?${params.toString()}`);
-      } else {
-        navigate(`${routes.MEETING}/${meetingId}`);
-      }
+      navigate(`${routes.MEETING}/${meetingId}${isPreparedMeeting ? `?${params.toString()}` : ''}`);
     } catch (error) {
       setIsLoading(false);
       setError((error as Error).message);

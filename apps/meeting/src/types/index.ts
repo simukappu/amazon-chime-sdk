@@ -56,14 +56,31 @@ export const VideoFiltersCpuUtilization = {
 };
 
 // Video Transform Options
-export const VideoTransformOptions = {
-  None: 'None',
-  Blur: 'Background Blur',
-  Replacement: 'Background Replacement',
-};
+export enum VideoTransformOptions {
+  None = 'None',
+  Blur = 'Background Blur',
+  Replacement = 'Background Replacement',
+}
 
 export type VideoTransformDropdownOptionType = {
   label: string;
+  value: string;
+};
+
+// Bcakground Replacement Options
+export enum ReplacementOptions {
+  Blue = 'Blue',
+  Beach = 'Beach',
+}
+
+export enum ReplacementType {
+  Color,
+  Image,
+};
+
+export type ReplacementDropdownOptionType = {
+  label: ReplacementOptions;
+  type: ReplacementType;
   value: string;
 };
 

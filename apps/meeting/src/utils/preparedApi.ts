@@ -10,7 +10,7 @@ export type MeetingFeatures = {
   export type JoinMeetingInfo = {
     Title: string;
     Meeting: CreateMeetingResponse;
-    Attendee: string;
+    Attendee: any;
   }
   
   interface MeetingResponse {
@@ -21,10 +21,17 @@ export type MeetingFeatures = {
     name: string;
   }
   
+    // The join token is passed in the URL fragment by the Rails application, which is not sent to any server.
+  // The prepared API does not return join tokens of attendees since they are credentials of each attendee.
+  export function getPreparedJoinToken(): string | null {
+    return new URLSearchParams(window.location.hash.replace(/^#/, '')).get('preparedJoinToken');
+  }
+
   export async function getPreparedMeeting(
     preparedApiEndpoint: string,
     meetingId: string,
-    attendeeId: string
+    attendeeId: string,
+    joinToken: string
   ): Promise<MeetingResponse> {
     const meetingRes = await fetch(preparedApiEndpoint + '/' + meetingId, {
       method: 'GET',
@@ -44,7 +51,7 @@ export type MeetingFeatures = {
       JoinInfo: {
         Title: meetingData.Meeting.ApplicationMetadata[meetingData.Meeting.ApplicationMetadata.MeetingType].name,
         Meeting: meetingData.Meeting,
-        Attendee: attendeeData.Attendee,
+        Attendee: { ...attendeeData.Attendee, JoinToken: joinToken },
       },
     };
   }
